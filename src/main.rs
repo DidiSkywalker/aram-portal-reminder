@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::BufReader;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,7 +5,7 @@ use regex::Regex;
 use reqwest::{Error, Response};
 use serde_json::{Result, Value};
 use colored::Colorize;
-use rodio::Decoder;
+use rodio::{Decoder, OutputStream, Source};
 
 #[tokio::main]
 async fn main() {
@@ -45,12 +43,15 @@ async fn main() {
 }
 
 fn play_reminder() {
-    let (_stream, handle) = rodio::OutputStream::try_default().unwrap();
-    let sink = rodio::Sink::try_new(&handle).unwrap();
-
-    let file = File::open("res/portal-benutzen.mp3").unwrap();
-    sink.append(Decoder::new(BufReader::new(file)).unwrap());
-    sink.sleep_until_end();
+    // Get a output stream handle to the default physical sound device
+    let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+    // Decode that sound file into a source
+    let my_slice = std::io::Cursor::new(include_bytes!("../res/portal-benutzen.mp3").as_ref());
+    let source = Decoder::new(my_slice).unwrap();
+    // Play the sound directly on the device
+    let _sound_result = stream_handle.play_raw(source.convert_samples());
+    // sleep to let the sound play out
+    std::thread::sleep(std::time::Duration::from_secs(1));
 }
 
 async fn watch_game_state(credentials: &Credentials, summoner_name: &str) -> Result<()> {
