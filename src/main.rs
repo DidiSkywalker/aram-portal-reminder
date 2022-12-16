@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::BufReader;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -5,9 +7,21 @@ use regex::Regex;
 use reqwest::{Error, Response};
 use serde_json::{Result, Value};
 use colored::Colorize;
+use rodio::Decoder;
 
 #[tokio::main]
 async fn main() {
+    let credentials_option = get_password();
+    let credentials: Credentials;
+    match credentials_option {
+        Some(creds) => {
+            credentials = creds
+        }
+        None => {
+            println!("{}", "No League Client detected. Launch the client and try again.".red());
+            return;
+        }
+    }
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
@@ -16,7 +30,6 @@ async fn main() {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
-    let credentials = get_password();
     let summoner_name = get_current_summoner(&credentials).await.unwrap();
 
     print!("{}", "Detected League Client logged into account ".green());
@@ -29,6 +42,15 @@ async fn main() {
         std::thread::sleep(std::time::Duration::from_secs(3));
     }
     println!("Application stopped.");
+}
+
+fn play_reminder() {
+    let (_stream, handle) = rodio::OutputStream::try_default().unwrap();
+    let sink = rodio::Sink::try_new(&handle).unwrap();
+
+    let file = File::open("res/portal-benutzen.mp3").unwrap();
+    sink.append(Decoder::new(BufReader::new(file)).unwrap());
+    sink.sleep_until_end();
 }
 
 async fn watch_game_state(credentials: &Credentials, summoner_name: &str) -> Result<()> {
@@ -87,10 +109,9 @@ fn handle_active_game(state: Value, summoner_name: &str) {
             let is_dead = champion["isDead"].as_bool().unwrap();
             let respawn_timer = champion["respawnTimer"].as_f64().unwrap();
             if is_dead {
-                print!("{}", "Death detected! Sending reminder in ".red().italic());
-                println!("{} {}", respawn_timer.ceil().to_string().red(), "seconds...".red().italic());
+                // sleep to wait out the respawn timer, then play the reminder
                 std::thread::sleep(std::time::Duration::from_secs(respawn_timer.ceil() as u64));
-                println!("{}", "Friendly reminder to use the portal! :)".cyan().bold());
+                play_reminder();
             }
         }
     }
@@ -103,7 +124,7 @@ async fn get_current_summoner(credentials: &Credentials) -> Result<String> {
         .text().await
         .unwrap();
     let json: Value = serde_json::from_str(&*res)?;
-    let summoner_name = json["displayName"].as_str().expect("summoner name string");
+    let summoner_name = json["displayName"].as_str().expect("Expect to find a summoner name");
     Ok(summoner_name.to_owned())
 }
 
@@ -117,13 +138,24 @@ async fn request_client_api(credentials: &Credentials, url: &str) -> std::result
         .send().await;
 }
 
-fn get_password() -> Credentials {
+fn get_password() -> Option<Credentials> {
     let command = "Get-CimInstance -Query \"SELECT * from Win32_Process WHERE name LIKE 'LeagueClientUx.exe'\" | Select-Object CommandLine | fl";
     let output = Command::new("powershell")
         .arg(command)
-        .output()
-        .expect("Cannot query League Client API");
-    let output_str = String::from_utf8(output.stdout).unwrap();
+        .output();
+    match output {
+        Err(_error) => {
+            // error here...
+            return None
+        }
+        Ok(ref out) => {
+            if out.stdout.is_empty() {
+                // ...or empty output means no league client running
+                return None
+            }
+        }
+    }
+    let output_str = String::from_utf8(output.unwrap().stdout).unwrap();
     let password_regex = Regex::new(r"--remoting-auth-token=([\w_-]+)").unwrap();
     let password_captures = password_regex.captures(&*output_str).unwrap();
     let password = password_captures.get(1).map_or("", |m| m.as_str());
@@ -131,10 +163,10 @@ fn get_password() -> Credentials {
     let port_regex = Regex::new(r"--app-port=([0-9]+)").unwrap();
     let port_captures = port_regex.captures(&*output_str).unwrap();
     let port = port_captures.get(1).map_or("", |m| m.as_str());
-    return Credentials {
+    Some(Credentials {
         password: String::from(password),
         port: String::from(port)
-    };
+    })
 }
 
 struct Credentials {
